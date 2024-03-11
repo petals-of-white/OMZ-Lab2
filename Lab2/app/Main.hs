@@ -7,7 +7,7 @@ import           Data.ByteString.Lazy        as LBS (append, fromStrict)
 import           Data.DICOM                  as Dicom
 import           Data.DICOM.Utilities        hiding (Size)
 import           Data.Either
-import           Data.Maybe                  (fromJust)
+import           Data.Maybe                  (catMaybes, fromJust)
 import qualified Data.Text.Lazy              as LazyText
 import           Data.Word                   (Word32, Word8)
 import           Graphics.GL
@@ -27,6 +27,7 @@ import           Prelude                     hiding (reverse)
 
 
 -- import           Data.IORef
+import           Data.List                   (delete)
 import           Typograffiti
 
 
@@ -45,14 +46,31 @@ setWindowCoordSystem = do
   loadIdentity
 
 -}
--- newtype ExceptT e m a = ExceptT (m (Either e a))
+
+data ShaderEnvironment a = ShaderEnvironment
+  {
+    primitives :: PrimitiveArray Triangles a,
+    colorImage :: Image (Format RWord)
+  }
+
+
+data Renderings ctx os m c = Renderings {
+  renderOriginal    :: Render os (),
+  renderWindowLevel :: Float -> Float -> Render os (),
+  renderBinarized   :: Float -> Render os (),
+  renderTarget :: Render os (),
+  renderInfo        :: ImageInfo c -> ExceptT TypograffitiError (ContextT ctx os m) (),
+  getImageInfo      :: ContextT ctx os m (ImageInfo c)
+  }
+
+data ImageInfo a = ImageInfo {minValue :: a, maxValue :: a}
+
+data ImageMode = Original | Binarized Float | WindowLevel Float Float deriving Eq
+
 type ContextExcept ctx m a = forall os. ExceptT TypograffitiError (ContextT ctx os m) a
 
 main :: IO ()
-main =
-  let logicOp = LogicOp And
-      transformColor green = V3 0 green 0 in
-  do
+main = do
     filename <- getDataFileName "DICOM_Image_8b.dcm"
     dicom <- either error id <$> readObjectFromFile filename
     let ((rows, columns), imgBytes, intercept, slope, bitsAlloc) = fromJust $ getDicomData dicom
@@ -79,18 +97,7 @@ main =
     let rText = renderLayout layout (Pos 10 10)
     -}
 
-    let myText = LazyText.pack $ unlines [
-            "Decoder Ring Theatre brings you the continuing adventures",
-            "of Canada's greatest superhero, that scourge of the underworld,",
-            "hunter of those who pray upon the innocent,",
-            "that marvelous masked mystery man",
-            "known only as The Red Panda!",
-            "",
-            "The Red Panda, masked crucader for justice, hides his secret identity",
-            "as one of the city's wealthiest men in his neverending battle",
-            "against crime & corruption. Only his trusty driver, Kit Baxter",
-            "who joins him in the guise of The Flying Squirrel,",
-            "knows who wears the mask of The Red Panda!"]
+    let myText = LazyText.pack "Мінімальна яскравість: 0123456789\nМаксимальна яскравість: 0123456789"
 
 
     void $
@@ -98,7 +105,6 @@ main =
             lift $ do
                 vertexBuffer1 :: Buffer os (B2 Float, B2 Float) <- newBuffer 4
                 vertexBuffer2 :: Buffer os (B2 Float, B2 Float) <- newBuffer 4
-                vertexBufferMask :: Buffer os (B2 Float, B Word32) <- newBuffer 12
 
 
                 writeBuffer vertexBuffer1 0 [(V2 (-1) (-1), V2 0 1),  (V2 1 (-1), V2 1 1),
@@ -107,51 +113,36 @@ main =
                 writeBuffer vertexBuffer2 0 [(V2 (-1) (-1), V2 0 0),  (V2 1 (-1), V2 1 0),
                                           (V2 (-1) 1, V2 0 1),     (V2 1 1, V2 1 1)]
 
-                writeBuffer vertexBufferMask 0
-                  [(V2 (-1) (-1), 255), (V2 (-1) 1, 255), (V2 0 (-1), 255),
-                  (V2 0 (-1),255),     (V2 0 1, 255), (V2 (-1) 1, 255),
-                  (V2 0 (-1),0),       (V2 0 1,0),       (V2 1 (-1),0),
-                  (V2 1 (-1),0),       (V2 1 1,0),       (V2 0 1,0)]
-
                 -- Textures
                 let texSize = V2 rows columns
                 originalTex <- newTexture2D R8UI texSize 1
-                logicTex <- newTexture2D R8UI texSize 1
+                outputTex <- newTexture2D R8UI texSize 1
 
                 writeTexture2D originalTex 0 0 texSize imgWord8
-                writeTexture2D logicTex 0 0 texSize imgWord8
+                writeTexture2D outputTex 0 0 texSize imgWord8
+                win <- newWindow (WindowFormatColor RGB8) $ (GLFW.defaultWindowConfig "Lab2") {configWidth=rows, configHeight=columns}
 
-
-
-                win <- newWindow (WindowFormatColor RGB8) ((GLFW.defaultWindowConfig "Lab2") {configWidth=rows, configHeight=columns})
-
+                funcRes <- liftIO $ makeDrawText' ttfName 0 (PixelSize 13 13) (defaultSample { sampleText = myText })
 
                 (Right rText) <- runExceptT $ do
-                      funcRes <- liftIO $ makeDrawText' ttfName 0 (PixelSize 15 15) (defaultSample { sampleText = myText })
+
                       case funcRes of
-                        Right func -> do
-                          drawText' <- func (txt myText)
-                          liftIO $ print "very good!"
-                          return $ arDraw drawText' [TextTransformMultiply (V4 0.5 0.5 0.7 1)] (V2 300 300)
+                        Right drawText ->
+                          let wow (ImageInfo minV maxV)  =  do
+                          -- return $ \(ImageInfo minV maxV) -> do
+                                -- let (minV, maxV) = (1,1)
+                                drawText' <-
+                                  drawText $ txt $ LazyText.pack $ "Мін яскравість: " ++ show minV ++ "\nМакс яскравість: " ++ show maxV
+                                liftIO $ arDraw drawText' [move 10 10, TextTransformMultiply (V4 1 1 1 1)] (V2 256 256)
+                          in return wow
+
                         Left err -> liftIO (print err) >> throwError err
-
-                liftIO $ putStrLn "Hello"
-
-
-                -- we will comment out these for now
 
 
                 -- Shaders
-                {-
-                shaderMask <- compileShader $ do
-                  primitiveStream <- toPrimitiveStream primitives
-
-                  let primitiveStream2 = fmap (\(V2 x y, c) -> (V4 x y 0 1, c)) primitiveStream
-                  fragmentStream <- rasterize (const (FrontAndBack, ViewPort (V2 0 0) texSize, DepthRange 0 1)) primitiveStream2
-
-                  draw (const logicOp) fragmentStream $ \c ->
-                    drawColor (\ s -> (colorImage s, True, True)) c
-                -}
+                let retriveImgInfo = do
+                      readTexture2D outputTex 0 0 texSize (\(ImageInfo minV maxV) (pixel:: Word8) ->
+                        return ImageInfo {minValue=min pixel minV, maxValue = max pixel maxV}) (ImageInfo {maxValue=minBound, minValue=maxBound})
 
                 shaderWord8TexToWin <- compileShader $ do
                   primitiveStream  <- toPrimitiveStream fst
@@ -166,6 +157,7 @@ main =
                       fragmentStream2 = fmap (((/ 255) . fmap toFloat) . sampleTexture) fragmentStream
 
                   drawWindowColor (const (win, ContextColorOption NoBlending (pure True))) fragmentStream2
+
 
                 {-
                 render $ do
@@ -182,50 +174,59 @@ main =
                     clearWindowColor win 0
                     vertexArray <- newVertexArray vertexBuffer1
                     shaderWord8TexToWin (toPrimitiveArray TriangleStrip vertexArray, originalTex)
-
                     ,
-                  renderText = rText
-                }
+                    renderBinarized = undefined,
+                    renderWindowLevel = undefined,
+                    renderInfo = rText,
+                    getImageInfo = retriveImgInfo,
+                    renderTarget = do
+                      vertexArray <- newVertexArray vertexBuffer1
+                      shaderWord8TexToWin (toPrimitiveArray TriangleStrip vertexArray, outputTex)
+                } Original ImageInfo {minValue=0, maxValue=255} True
               )
 
-renderLoop :: (MonadIO m,  MonadException m) => Window os RGBFloat ds -> Renderings os -> ContextT GLFW.Handle os m ()
-renderLoop win renderings@(Renderings rOrig rText)  = do
-  logic <- getKey win Key'L
-  colorModelling <- getKey win Key'C
 
-  {-
-  case (logic, colorModelling) of
-    (Just KeyState'Pressed, _) -> render rLogic
-    (_, Just KeyState'Pressed) -> render rColor
-    _                          -> render rOrig
-  -}
-  -- render $ clearWindowColor win 1
-  -- render rOrig
+renderLoop :: (MonadIO m,  MonadException m, Num c) => Window os RGBFloat ds -> Renderings GLFW.Handle os m c ->
+  ImageMode -> ImageInfo c -> Bool -> ContextT GLFW.Handle os m ()
+renderLoop win renderings appMode imgInfo shouldUpdate = do
 
-  render rOrig
-  winSize <- getWindowSize win
-  bufSize <- getFrameBufferSize win
-  liftIO $ putStrLn $ "Window size is " ++ show winSize
-  liftIO $ putStrLn $ "Framebuf size is " ++ show bufSize
+  bin <- getKey win Key'B
+  windowLevel <- getKey win Key'W
+  orig <- getKey win Key'O
 
+  newInfo <-
+    if shouldUpdate then do
+      case appMode of
+          Original ->
+            render (renderOriginal renderings)
+          Binarized porih ->
+            render $ renderBinarized renderings porih
+          WindowLevel l w ->
+            render $ renderWindowLevel renderings l w
+      getImageInfo renderings
+    else return imgInfo
+
+
+  render $ renderTarget renderings
+  
   glEnable GL_BLEND
   glBlendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA
-  liftIO rText
+  (Right ()) <-  runExceptT $ renderInfo renderings imgInfo
+
+  let activeKeys = catMaybes $ zipWith (\keyStatus mode ->
+            case keyStatus of
+              Just KeyState'Pressed -> Just mode
+              _                     -> Nothing
+            ) [orig, windowLevel, bin] [Original, WindowLevel 0.2 0.2, Binarized 0.3]
+
+      newMode = case activeKeys of
+        []    -> appMode
+        new:_ -> new
+
+
   swapWindowBuffers win
   closeRequested <- GLFW.windowShouldClose win
+
   unless (closeRequested == Just True) $
-    renderLoop win renderings
+    renderLoop win renderings newMode newInfo (appMode /= newMode)
 
-data ShaderEnvironment a = ShaderEnvironment
-  {
-    primitives :: PrimitiveArray Triangles a,
-    colorImage :: Image (Format RWord)
-  }
-
-
-data Renderings os  = Renderings {
-  renderOriginal :: Render os (),
-  renderText     :: IO ()
-  }
-
-data AppMode = Original | Binarized
