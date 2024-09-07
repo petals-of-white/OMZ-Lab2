@@ -52,26 +52,6 @@ extra-doc-files: CHANGELOG.md
 common warnings
   ghc-options: -Wall -threaded
 
-executable minitype
-  ghc-options:      -Wall -threaded
-  main-is:          FontTest.hs
-  other-modules:
-    GL
-    UnicodeMath
-
-  build-depends:
-    , base                >=4.12 && <5
-    , containers
-    , gl
-    , GLFW-b
-    , minitypeset-opengl
-    , mtl
-    , OpenGL
-    , text
-
-  hs-source-dirs:   app
-  default-language: GHC2021
-
 executable OMZ-Lab2
   -- Import common warning flags.
   import:           warnings
@@ -84,6 +64,9 @@ executable OMZ-Lab2
     AppState
     Graphics.Render
     Graphics.Shaders
+    Graphics.Texture
+    Graphics.Uniforms
+    Input
 
   -- LANGUAGE extensions used by modules in this package.
   -- other-extensions:
@@ -100,6 +83,7 @@ executable OMZ-Lab2
     , dicom
     , exception-transformers
     , gl
+    , GLFW-b
     , GPipe
     , GPipe-GLFW
     , JuicyPixels
@@ -109,6 +93,7 @@ executable OMZ-Lab2
     , mtl
     , OpenGL
     , pretty
+    , random
     , text
     , transformers
     , typograffiti

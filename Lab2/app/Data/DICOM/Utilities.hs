@@ -1,4 +1,3 @@
-
 module Data.DICOM.Utilities where
 
 import           Data.Binary           as Binary (decodeOrFail)
